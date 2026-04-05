@@ -12,7 +12,7 @@ export default function Home() {
     if (!t) { setError('Paste your album token'); return }
     try {
       const parsed = JSON.parse(atob(t))
-      if (!parsed.url || !parsed.key) throw new Error()
+      if (!parsed.url || !parsed.key1 || !parsed.key2) throw new Error()
     } catch {
       setError('Invalid token — make sure you copied the full string')
       return

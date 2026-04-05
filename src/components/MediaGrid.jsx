@@ -20,7 +20,7 @@ function groupByDate(items) {
   return groups
 }
 
-function ThumbnailCell({ item, cryptoKey, onOpen }) {
+function ThumbnailCell({ item, cryptoKeys, onOpen }) {
   const [src, setSrc] = useState(null)
   const [loaded, setLoaded] = useState(false)
   const ref = useRef(null)
@@ -38,7 +38,7 @@ function ThumbnailCell({ item, cryptoKey, onOpen }) {
         ;(async () => {
           try {
             if (!item.thumbnail) { setSrc('placeholder'); return }
-            const blob = await decryptThumbnail(item, cryptoKey)
+            const blob = await decryptThumbnail(item, cryptoKeys)
             if (!blob) { setSrc('placeholder'); return }
             const url = URL.createObjectURL(blob)
             urlRef.current = url
@@ -56,7 +56,7 @@ function ThumbnailCell({ item, cryptoKey, onOpen }) {
       observer.disconnect()
       if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null }
     }
-  }, []) // run once on mount — item/cryptoKey are stable per cell
+  }, []) // run once on mount — item/cryptoKeys are stable per cell
 
   const isVideo = item.type?.startsWith('video/')
 
@@ -94,7 +94,7 @@ function ThumbnailCell({ item, cryptoKey, onOpen }) {
   )
 }
 
-export default function MediaGrid({ items, cryptoKey, onOpen }) {
+export default function MediaGrid({ items, cryptoKeys, onOpen }) {
   const groups = groupByDate(items)
 
   return (
@@ -107,7 +107,7 @@ export default function MediaGrid({ items, cryptoKey, onOpen }) {
               <ThumbnailCell
                 key={item.id}
                 item={item}
-                cryptoKey={cryptoKey}
+                cryptoKeys={cryptoKeys}
                 onOpen={onOpen}
               />
             ))}

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "create-album": "node scripts/create-album.mjs"
+    "create-album": "node scripts/create-album.mjs",
+    "prepare": "bash scripts/install-hooks.sh 2>/dev/null || true"
   },
   "dependencies": {
     "react": "^18.3.1",

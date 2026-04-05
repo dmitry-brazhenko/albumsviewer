@@ -3,7 +3,7 @@ import { decryptMedia } from '../utils/album.js'
 import VideoPlayer from './VideoPlayer.jsx'
 import styles from './Lightbox.module.css'
 
-export default function Lightbox({ items, index, cryptoKey, onClose, onNavigate }) {
+export default function Lightbox({ items, index, cryptoKeys, onClose, onNavigate }) {
   // mediaMap only used for images — videos go straight to VideoPlayer
   const [mediaMap, setMediaMap] = useState({})
   const touchStartX = useRef(null)
@@ -18,14 +18,14 @@ export default function Lightbox({ items, index, cryptoKey, onClose, onNavigate 
     console.log(`[Lightbox] Loading image ${i}: ${items[i].name}`)
     setMediaMap(m => ({ ...m, [i]: 'loading' }))
     try {
-      const blob = await decryptMedia(items[i], cryptoKey)
+      const blob = await decryptMedia(items[i], cryptoKeys)
       console.log(`[Lightbox] Image ${i} ready: ${(blob.size / 1024).toFixed(0)} KB`)
       setMediaMap(m => ({ ...m, [i]: blob }))
     } catch (e) {
       console.error(`[Lightbox] Failed to decrypt image ${i}:`, e)
       setMediaMap(m => ({ ...m, [i]: 'error' }))
     }
-  }, [items, cryptoKey, mediaMap])
+  }, [items, cryptoKeys, mediaMap])
 
   useEffect(() => {
     loadItem(index)
@@ -61,7 +61,7 @@ export default function Lightbox({ items, index, cryptoKey, onClose, onNavigate 
 
   function renderMedia() {
     if (isVideo(item)) {
-      return <VideoPlayer key={item.id} item={item} cryptoKey={cryptoKey} />
+      return <VideoPlayer key={item.id} item={item} cryptoKeys={cryptoKeys} />
     }
     if (!media || media === 'loading') {
       return (

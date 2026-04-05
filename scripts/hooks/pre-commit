@@ -1,0 +1,53 @@
+#!/bin/bash
+# Pre-commit hook: prevent accidental commit of album encryption keys/tokens
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+FAIL=0
+
+# ── 1. Block encrypted album data (defense-in-depth; .gitignore should catch this) ──
+if git diff --cached --name-only | grep -q '^public/albums/'; then
+  echo -e "${RED}BLOCKED${NC}: Staged files include encrypted album data (public/albums/)."
+  echo "  These should be excluded by .gitignore."
+  echo "  Run: git restore --staged 'public/albums/'"
+  FAIL=1
+fi
+
+# ── 2. Scan for AES-256 key patterns in staged changes ──────────────────────────
+# An AES-256 key exported as raw base64 is exactly 44 characters (32 bytes).
+# Catches: "key":"...", "key1":"...", "key2":"..."
+KEY_PATTERN='"key[12]?"\s*:\s*"[A-Za-z0-9+/]{43}="'
+MATCHES=$(git diff --cached -U0 2>/dev/null | grep '^+' | grep -v '^+++' | grep -E "$KEY_PATTERN" || true)
+if [ -n "$MATCHES" ]; then
+  echo -e "${RED}BLOCKED${NC}: Potential AES-256 encryption key detected in staged changes:"
+  echo "$MATCHES" | head -5 | sed 's/^/  /'
+  FAIL=1
+fi
+
+# ── 3. Scan for album access tokens ─────────────────────────────────────────────
+# A token is base64(JSON). JSON always starts with {"url":"albums/
+# The prefix string is constructed at runtime to avoid triggering this check
+# when the hook script itself is committed.
+_P1='eyJ1cmwiOi'; _P2='JhbGJ1bXMv'
+TOKEN_PREFIX="${_P1}${_P2}"
+# Exclude changes to this hook file itself (legitimate to contain the prefix)
+HOOK_PATH="scripts/hooks/pre-commit"
+MATCHES=$(git diff --cached -U0 2>/dev/null \
+  | grep -v "^--- a/${HOOK_PATH}" | grep -v "^+++ b/${HOOK_PATH}" \
+  | grep '^+' | grep -v '^+++' \
+  | grep "$TOKEN_PREFIX" || true)
+if [ -n "$MATCHES" ]; then
+  echo -e "${RED}BLOCKED${NC}: Potential album access token detected in staged changes:"
+  echo "$MATCHES" | head -3 | sed 's/^/  /'
+  FAIL=1
+fi
+
+if [ $FAIL -ne 0 ]; then
+  echo ""
+  echo -e "${YELLOW}Commit blocked to prevent key/token exposure.${NC}"
+  echo "If this is a false positive: git commit --no-verify"
+  exit 1
+fi
+
+exit 0

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { hexToIV, decryptBuffer } from '../utils/crypto.js'
+import { hexToIV, decryptDoubleBuffer } from '../utils/crypto.js'
 import { fetchChunk } from '../utils/chunks.js'
 import { resolveChunkUrl } from '../utils/album.js'
 import styles from './VideoPlayer.module.css'
@@ -27,7 +27,7 @@ function fmtTime(s) {
     : `${m}:${String(sec).padStart(2, '0')}`
 }
 
-export default function VideoPlayer({ item, cryptoKey }) {
+export default function VideoPlayer({ item, cryptoKeys }) {
   const videoRef = useRef(null)
   const [loadInfo, setLoadInfo] = useState(null) // { bufferedSec, totalSec } | null
   const [error, setError] = useState(null)
@@ -39,19 +39,19 @@ export default function VideoPlayer({ item, cryptoKey }) {
     const onCancel = () => cancelled
 
     if (canStream(item)) {
-      streamWithMediaSource(video, item, cryptoKey, setLoadInfo, setError, onCancel)
+      streamWithMediaSource(video, item, cryptoKeys, setLoadInfo, setError, onCancel)
     } else {
       if (item.chunks.length > 1) {
         console.warn(`[VideoPlayer] "${item.name}" is not streamable — downloading all ${item.chunks.length} chunks`)
       }
-      decryptAllThenPlay(video, item, cryptoKey, setLoadInfo, setError, onCancel)
+      decryptAllThenPlay(video, item, cryptoKeys, setLoadInfo, setError, onCancel)
     }
 
     return () => {
       cancelled = true
       if (video.src?.startsWith('blob:')) URL.revokeObjectURL(video.src)
     }
-  }, [item, cryptoKey])
+  }, [item, cryptoKeys])
 
   const totalSec = item.duration || null
   const showLoadBar = loadInfo && (loadInfo.chunksLoaded < loadInfo.totalChunks)
@@ -123,7 +123,7 @@ async function waitForBufferRoom(sb, video, isCancelled) {
 
 // ── Streaming implementation ───────────────────────────────────────────────────
 
-async function streamWithMediaSource(video, item, cryptoKey, setLoadInfo, setError, isCancelled) {
+async function streamWithMediaSource(video, item, { key1, key2 }, setLoadInfo, setError, isCancelled) {
   const ms = new MediaSource()
   const objectUrl = URL.createObjectURL(ms)
   video.src = objectUrl
@@ -137,7 +137,7 @@ async function streamWithMediaSource(video, item, cryptoKey, setLoadInfo, setErr
   } catch (e) {
     console.warn('[VideoPlayer] addSourceBuffer failed:', e.message, '— falling back')
     URL.revokeObjectURL(objectUrl)
-    decryptAllThenPlay(video, item, cryptoKey, setLoadInfo, setError, isCancelled)
+    decryptAllThenPlay(video, item, cryptoKeys, setLoadInfo, setError, isCancelled)
     return
   }
 
@@ -157,13 +157,14 @@ async function streamWithMediaSource(video, item, cryptoKey, setLoadInfo, setErr
       await waitForBufferRoom(sb, video, isCancelled)
       if (isCancelled()) break
 
-      const { path, iv: ivHex } = item.chunks[i]
+      const { path, iv1: iv1Hex, iv2: iv2Hex } = item.chunks[i]
       console.log(`[VideoPlayer] chunk ${i + 1}/${item.chunks.length} buffered=${bufferedAhead(sb, video.currentTime).toFixed(0)}s ahead`)
 
-      const iv = hexToIV(ivHex)
+      const iv1 = hexToIV(iv1Hex)
+      const iv2 = hexToIV(iv2Hex)
       const encrypted = await fetchChunk(resolveChunkUrl(path))
       if (isCancelled()) break
-      const decrypted = await decryptBuffer(cryptoKey, iv, encrypted)
+      const decrypted = await decryptDoubleBuffer(key1, key2, iv1, iv2, encrypted)
 
       await sbOperation(sb, () => sb.appendBuffer(decrypted))
 
@@ -188,16 +189,17 @@ async function streamWithMediaSource(video, item, cryptoKey, setLoadInfo, setErr
 
 // ── Fallback: download everything then play ────────────────────────────────────
 
-async function decryptAllThenPlay(video, item, cryptoKey, setLoadInfo, setError, isCancelled) {
+async function decryptAllThenPlay(video, item, { key1, key2 }, setLoadInfo, setError, isCancelled) {
   try {
     const parts = []
     for (let i = 0; i < item.chunks.length; i++) {
       if (isCancelled()) return
-      const { path, iv: ivHex } = item.chunks[i]
+      const { path, iv1: iv1Hex, iv2: iv2Hex } = item.chunks[i]
       console.log(`[VideoPlayer] Downloading chunk ${i + 1}/${item.chunks.length}`)
-      const iv = hexToIV(ivHex)
+      const iv1 = hexToIV(iv1Hex)
+      const iv2 = hexToIV(iv2Hex)
       const encrypted = await fetchChunk(resolveChunkUrl(path))
-      const decrypted = await decryptBuffer(cryptoKey, iv, encrypted)
+      const decrypted = await decryptDoubleBuffer(key1, key2, iv1, iv2, encrypted)
       parts.push(decrypted)
       setLoadInfo({ chunksLoaded: i + 1, totalChunks: item.chunks.length, bufferedSec: null })
     }

@@ -38,15 +38,34 @@ async function encryptBuffer(key, iv, data) {
   return new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv }, key, data))
 }
 
-async function encryptJSON(key, obj) {
-  const iv = generateIV()
-  const enc = await encryptBuffer(key, iv, Buffer.from(JSON.stringify(obj), 'utf8'))
-  const out = new Uint8Array(12 + enc.length)
-  out.set(iv); out.set(enc, 12)
+// Double AES-GCM: encrypt with key1 first, then key2.
+// Returns { enc, iv1, iv2 } — both IVs must be stored in the album config.
+async function encryptDoubleBuffer(key1, key2, data) {
+  const iv1 = generateIV()
+  const enc1 = await encryptBuffer(key1, iv1, data)
+  const iv2 = generateIV()
+  const enc2 = await encryptBuffer(key2, iv2, enc1)
+  return { enc: enc2, iv1, iv2 }
+}
+
+// Double AES-GCM for JSON config.
+// Format: [iv2 (12 bytes)] [enc(key2, iv2, [iv1 (12 bytes)][enc(key1, iv1, JSON)])]
+async function encryptDoubleJSON(key1, key2, obj) {
+  const iv1 = generateIV()
+  const inner = new Uint8Array(await subtle.encrypt(
+    { name: 'AES-GCM', iv: iv1 }, key1, Buffer.from(JSON.stringify(obj), 'utf8')
+  ))
+  const innerBlob = new Uint8Array(12 + inner.length)
+  innerBlob.set(iv1); innerBlob.set(inner, 12)
+
+  const iv2 = generateIV()
+  const outer = await encryptBuffer(key2, iv2, innerBlob)
+  const out = new Uint8Array(12 + outer.length)
+  out.set(iv2); out.set(outer, 12)
   return out
 }
 
-const encodeToken = (url, key) => Buffer.from(JSON.stringify({ url, key })).toString('base64')
+const encodeToken = (url, key1, key2) => Buffer.from(JSON.stringify({ url, key1, key2 })).toString('base64')
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -169,15 +188,14 @@ function randomBytes(size) {
   return buf
 }
 
-async function writeNoiseFiles(dir, albumKey, realSizes) {
+async function writeNoiseFiles(albumDir, key1, key2, realSizes) {
   if (!realSizes.length) return
   process.stdout.write(`\n  Writing ${realSizes.length} noise files… `)
   for (const realSize of realSizes) {
     // Jitter ±15 % so sizes aren't a perfect fingerprint
     const size = Math.max(16, Math.floor(realSize * (0.85 + Math.random() * 0.3)))
-    const iv = generateIV()
-    const encrypted = await encryptBuffer(albumKey, iv, randomBytes(size))
-    await writeFile(join(dir, randomName()), encrypted)
+    const { enc } = await encryptDoubleBuffer(key1, key2, randomBytes(size))
+    await writeFile(join(albumDir, randomName()), enc)
   }
   console.log('✓')
 }
@@ -224,17 +242,18 @@ async function main() {
   if (!mediaFiles.length) { console.error('No media files found in', inputDir); process.exit(1) }
   console.log(`Found ${mediaFiles.length} media files\n`)
 
-  const albumKey  = await generateKey()
-  const keyBase64 = await exportKeyB64(albumKey)
-  const chunksDir = join(outputBase, 'albums', albumId, 'chunks')
-  const thumbsDir = join(outputBase, 'albums', albumId, 'thumbs')
-  await ensureDir(chunksDir)
-  await ensureDir(thumbsDir)
+  const albumKey1  = await generateKey()
+  const albumKey2  = await generateKey()
+  const key1Base64 = await exportKeyB64(albumKey1)
+  const key2Base64 = await exportKeyB64(albumKey2)
+  // Flat directory — all files (chunks, thumbs, config, noise) share the same dir
+  // with random names, so there is no structural signal about file roles.
+  const albumDir = join(outputBase, 'albums', albumId)
+  await ensureDir(albumDir)
 
   const mediaEntries = []
-  // Track real chunk sizes for noise calibration
-  const realChunkSizes = []
-  const realThumbSizes = []
+  // Track all real encrypted file sizes for noise calibration
+  const realFileSizes = []
 
   for (let i = 0; i < mediaFiles.length; i++) {
     const filename = mediaFiles[i]
@@ -303,29 +322,27 @@ async function main() {
       console.log(thumbRaw ? `✓  ${(thumbRaw.length/1024).toFixed(0)} KB` : 'none')
     }
 
-    // ── 2. Encrypt chunks (random filenames) ─────────────────────────────────
+    // ── 2. Encrypt chunks (double AES-GCM, random filenames, flat dir) ──────
     process.stdout.write('    encrypt  → ')
     const plainChunks  = splitIntoChunks(raw)
     const chunkEntries = []
     for (const plain of plainChunks) {
-      const iv   = generateIV()
-      const enc  = await encryptBuffer(albumKey, iv, plain)
+      const { enc, iv1, iv2 } = await encryptDoubleBuffer(albumKey1, albumKey2, plain)
       const name = randomName()
-      await writeFile(join(chunksDir, name), enc)
-      chunkEntries.push({ path: `albums/${albumId}/chunks/${name}`, iv: ivToHex(iv) })
-      realChunkSizes.push(enc.length)
+      await writeFile(join(albumDir, name), enc)
+      chunkEntries.push({ path: `albums/${albumId}/${name}`, iv1: ivToHex(iv1), iv2: ivToHex(iv2) })
+      realFileSizes.push(enc.length)
     }
     console.log(`✓  ${plainChunks.length} chunk${plainChunks.length !== 1 ? 's' : ''}`)
 
-    // ── 3. Encrypt thumbnail ──────────────────────────────────────────────────
+    // ── 3. Encrypt thumbnail (double AES-GCM, flat dir) ───────────────────────
     let thumbEntry
     if (thumbRaw) {
-      const iv   = generateIV()
-      const enc  = await encryptBuffer(albumKey, iv, thumbRaw)
+      const { enc, iv1, iv2 } = await encryptDoubleBuffer(albumKey1, albumKey2, thumbRaw)
       const name = randomName()
-      await writeFile(join(thumbsDir, name), enc)
-      thumbEntry = { iv: ivToHex(iv), chunk: `albums/${albumId}/thumbs/${name}` }
-      realThumbSizes.push(enc.length)
+      await writeFile(join(albumDir, name), enc)
+      thumbEntry = { iv1: ivToHex(iv1), iv2: ivToHex(iv2), chunk: `albums/${albumId}/${name}` }
+      realFileSizes.push(enc.length)
     }
 
     mediaEntries.push({
@@ -342,17 +359,17 @@ async function main() {
     })
   }
 
-  // ── 4. Noise files ────────────────────────────────────────────────────────
-  await writeNoiseFiles(chunksDir, albumKey, realChunkSizes)
-  await writeNoiseFiles(thumbsDir, albumKey, realThumbSizes)
+  // ── 4. Noise files (same flat dir, same count as real files) ────────────────
+  await writeNoiseFiles(albumDir, albumKey1, albumKey2, realFileSizes)
 
-  // ── 5. Write encrypted config ─────────────────────────────────────────────
-  process.stdout.write('\n  Writing config.enc… ')
+  // ── 5. Write double-encrypted config (random filename, flat dir) ──────────
+  const configName = randomName()
+  process.stdout.write(`\n  Writing config (double AES-GCM)… `)
   const config = { title: values.title || albumId, description: values.description, created: new Date().toISOString(), media: mediaEntries }
-  await writeFile(join(outputBase, 'albums', albumId, 'config.enc'), await encryptJSON(albumKey, config))
+  await writeFile(join(albumDir, configName), await encryptDoubleJSON(albumKey1, albumKey2, config))
   console.log('✓')
 
-  const token = encodeToken(`albums/${albumId}/config.enc`, keyBase64)
+  const token = encodeToken(`albums/${albumId}/${configName}`, key1Base64, key2Base64)
 
   console.log('\n' + '─'.repeat(60))
   console.log('✅  Album created!\n')

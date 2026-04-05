@@ -75,6 +75,23 @@ export function decodeToken(token) {
   }
 }
 
+// Double AES-GCM decrypt.
+// On-disk format: enc(key2, iv2, enc(key1, iv1, plaintext))
+// iv1 and iv2 are stored in the album config; this function receives them as Uint8Array.
+export async function decryptDoubleBuffer(key1, key2, iv1, iv2, data) {
+  const inner = await decryptBuffer(key2, iv2, data)
+  return decryptBuffer(key1, iv1, inner)
+}
+
+// Double AES-GCM decrypt for config blobs.
+// On-disk format: [iv2 (12 bytes)] [enc(key2, iv2, [iv1 (12 bytes)][enc(key1, iv1, JSON)])]
+export async function decryptDoubleJSON(key1, key2, bytes) {
+  const iv2 = bytes.slice(0, 12)
+  const enc2 = bytes.slice(12)
+  const inner = await decryptBuffer(key2, iv2, enc2)
+  return decryptJSON(key1, inner)
+}
+
 export function uint8ToBase64(arr) {
   let binary = ''
   for (let i = 0; i < arr.length; i++) binary += String.fromCharCode(arr[i])

@@ -9,7 +9,7 @@ export default function Viewer() {
   const navigate = useNavigate()
   const [state, setState] = useState('idle') // idle | loading | ready | error
   const [error, setError] = useState('')
-  const [album, setAlbum] = useState(null)   // { config, cryptoKey }
+  const [album, setAlbum] = useState(null)   // { config, cryptoKeys }
   const [lightbox, setLightbox] = useState(null) // index or null
 
   useEffect(() => {
@@ -62,7 +62,7 @@ export default function Viewer() {
 
   if (state !== 'ready') return null
 
-  const { config, cryptoKey } = album
+  const { config, cryptoKeys } = album
 
   return (
     <div className={styles.page}>
@@ -82,7 +82,7 @@ export default function Viewer() {
       <main className={styles.main}>
         <MediaGrid
           items={config.media}
-          cryptoKey={cryptoKey}
+          cryptoKeys={cryptoKeys}
           onOpen={i => setLightbox(i)}
         />
       </main>
@@ -91,7 +91,7 @@ export default function Viewer() {
         <Lightbox
           items={config.media}
           index={lightbox}
-          cryptoKey={cryptoKey}
+          cryptoKeys={cryptoKeys}
           onClose={() => setLightbox(null)}
           onNavigate={setLightbox}
         />

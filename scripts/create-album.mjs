@@ -188,15 +188,22 @@ function randomBytes(size) {
   return buf
 }
 
+// Chunks larger than this get exactly 1 noise file at the same size (no jitter),
+// to avoid doubling storage for multi-hundred-MB videos.
+const LARGE_FILE_THRESHOLD = 4 * 1024 * 1024 // 4 MB
+
 async function writeNoiseFiles(albumDir, key1, key2, realSizes) {
   if (!realSizes.length) return
   let total = 0
   for (const realSize of realSizes) {
-    // 1–3 noise files per real file
-    const count = 1 + Math.floor(Math.random() * 3)
+    const isLarge = realSize >= LARGE_FILE_THRESHOLD
+    // Large files: 1 noise file at the same size (mirrors the real chunk 1:1)
+    // Small files: 1-3 noise files with -90% … +200% size jitter
+    const count = isLarge ? 1 : 1 + Math.floor(Math.random() * 3)
     for (let n = 0; n < count; n++) {
-      // Size range: -90% … +200% of the real file size
-      const size = Math.max(16, Math.floor(realSize * (0.1 + Math.random() * 2.9)))
+      const size = isLarge
+        ? realSize
+        : Math.max(16, Math.floor(realSize * (0.1 + Math.random() * 2.9)))
       const { enc } = await encryptDoubleBuffer(key1, key2, randomBytes(size))
       await writeFile(join(albumDir, randomName()), enc)
       total++

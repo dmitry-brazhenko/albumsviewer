@@ -190,13 +190,19 @@ function randomBytes(size) {
 
 async function writeNoiseFiles(albumDir, key1, key2, realSizes) {
   if (!realSizes.length) return
-  process.stdout.write(`\n  Writing ${realSizes.length} noise files… `)
+  let total = 0
   for (const realSize of realSizes) {
-    // Jitter ±15 % so sizes aren't a perfect fingerprint
-    const size = Math.max(16, Math.floor(realSize * (0.85 + Math.random() * 0.3)))
-    const { enc } = await encryptDoubleBuffer(key1, key2, randomBytes(size))
-    await writeFile(join(albumDir, randomName()), enc)
+    // 1–10 noise files per real file
+    const count = 1 + Math.floor(Math.random() * 10)
+    for (let n = 0; n < count; n++) {
+      // Size range: -90% … +200% of the real file size
+      const size = Math.max(16, Math.floor(realSize * (0.1 + Math.random() * 2.9)))
+      const { enc } = await encryptDoubleBuffer(key1, key2, randomBytes(size))
+      await writeFile(join(albumDir, randomName()), enc)
+      total++
+    }
   }
+  process.stdout.write(`\n  Writing ${total} noise files… `)
   console.log('✓')
 }
 

@@ -35,7 +35,7 @@ public/albums/<album-id>/     ← only the album ID is visible
   ...                         ← all files look identical from outside
 ```
 
-Every file has a random 32-char hex name. For each real file, 1–10 noise files are generated with sizes randomly between −90% and +200% of the original, making it impossible to infer the media item count, file roles, or sizes from the repository contents.
+Every file has a random 32-char hex name. For each real file, 1–3 noise files are generated with sizes randomly between −90% and +200% of the original, making it impossible to infer the media item count, file roles, or sizes from the repository contents.
 
 ### Video streaming
 

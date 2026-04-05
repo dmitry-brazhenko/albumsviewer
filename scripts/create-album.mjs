@@ -192,8 +192,8 @@ async function writeNoiseFiles(albumDir, key1, key2, realSizes) {
   if (!realSizes.length) return
   let total = 0
   for (const realSize of realSizes) {
-    // 1–10 noise files per real file
-    const count = 1 + Math.floor(Math.random() * 10)
+    // 1–3 noise files per real file
+    const count = 1 + Math.floor(Math.random() * 3)
     for (let n = 0; n < count; n++) {
       // Size range: -90% … +200% of the real file size
       const size = Math.max(16, Math.floor(realSize * (0.1 + Math.random() * 2.9)))

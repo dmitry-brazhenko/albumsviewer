@@ -107,6 +107,10 @@ function bufferedAhead(sb, currentTime) {
 async function evictPlayed(sb, video) {
   if (sb.updating || sb.buffered.length === 0) return
   const evictEnd = video.currentTime - EVICT_BEHIND_S
+  const lastBufferedEnd = sb.buffered.end(sb.buffered.length - 1)
+  // Never evict if it would fully empty the SourceBuffer — Safari rejects
+  // appendBuffer into an empty SourceBuffer for non-zero-timestamp fragments
+  if (evictEnd >= lastBufferedEnd) return
   if (evictEnd > sb.buffered.start(0) + 1) {
     console.log(`[VideoPlayer] Evicting 0..${evictEnd.toFixed(1)}s`)
     await sbOperation(sb, () => sb.remove(0, evictEnd))
@@ -124,38 +128,74 @@ async function waitForBufferRoom(sb, video, isCancelled) {
 // ── Streaming implementation ───────────────────────────────────────────────────
 
 async function streamWithMediaSource(video, item, { key1, key2 }, setLoadInfo, setError, isCancelled) {
-  const ms = new MediaSource()
-  const objectUrl = URL.createObjectURL(ms)
-  video.src = objectUrl
+  const mimeType = item.codecString || item.type
 
-  await new Promise(resolve => ms.addEventListener('sourceopen', resolve, { once: true }))
-  if (isCancelled()) { URL.revokeObjectURL(objectUrl); return }
+  // Create a fresh MediaSource + SourceBuffer and attach it to the video element.
+  // Called once at start and again on every seek — Safari fires a SourceBuffer
+  // error event the moment a seek interrupts an in-flight appendBuffer, making
+  // the existing SourceBuffer defunct; a new one is the only reliable recovery.
+  async function createSession() {
+    const prevSrc = video.src
+    const newMs = new MediaSource()
+    const url = URL.createObjectURL(newMs)
+    video.src = url
+    if (prevSrc?.startsWith('blob:')) URL.revokeObjectURL(prevSrc)
+    await new Promise(resolve => newMs.addEventListener('sourceopen', resolve, { once: true }))
+    if (isCancelled()) { URL.revokeObjectURL(url); return null }
+    try {
+      const newSb = newMs.addSourceBuffer(mimeType)
+      if (item.duration) try { newMs.duration = item.duration } catch {}
+      return { ms: newMs, sb: newSb, url }
+    } catch (e) {
+      console.warn('[VideoPlayer] addSourceBuffer failed:', e.message)
+      URL.revokeObjectURL(url)
+      return null
+    }
+  }
 
-  let sb
-  try {
-    sb = ms.addSourceBuffer(item.codecString || item.type)
-  } catch (e) {
-    console.warn('[VideoPlayer] addSourceBuffer failed:', e.message, '— falling back')
-    URL.revokeObjectURL(objectUrl)
-    decryptAllThenPlay(video, item, cryptoKeys, setLoadInfo, setError, isCancelled)
+  let session = await createSession()
+  if (!session) {
+    decryptAllThenPlay(video, item, { key1, key2 }, setLoadInfo, setError, isCancelled)
     return
   }
+  let { ms, sb } = session
 
-  // Set duration on MediaSource if known
-  if (item.duration) {
-    try { ms.duration = item.duration } catch {}
+  // seekTarget: chunk index to jump to; set by the seeking event handler
+  let seekTarget = null
+  let initChunk  = null  // cached chunk 0 — re-appended after session restart on seek
+
+  const onSeeking = () => {
+    if (!item.duration) return
+    const idx = Math.floor((video.currentTime / item.duration) * item.chunks.length)
+    seekTarget = Math.max(0, idx)
+    console.log(`[VideoPlayer] Seek → ${video.currentTime.toFixed(1)}s, jumping to chunk ~${seekTarget}`)
   }
+  video.addEventListener('seeking', onSeeking)
 
   try {
-    for (let i = 0; i < item.chunks.length; i++) {
+    let i = 0
+    while (i < item.chunks.length) {
       if (isCancelled()) break
 
-      // 1. Evict played content before we fetch — SourceBuffer must be idle
-      await evictPlayed(sb, video)
+      // Seek: restart the MSE session so the SourceBuffer is fresh, then
+      // re-append the cached init chunk before loading the seek target.
+      if (seekTarget !== null) {
+        i = seekTarget
+        seekTarget = null
+        const newSession = await createSession()
+        if (!newSession || isCancelled()) break
+        ms = newSession.ms
+        sb = newSession.sb
+        if (initChunk) {
+          try { await sbOperation(sb, () => sb.appendBuffer(initChunk)) } catch {}
+        }
+        continue
+      }
 
-      // 2. Wait if we're too far ahead (don't fill the quota)
+      await evictPlayed(sb, video)
       await waitForBufferRoom(sb, video, isCancelled)
       if (isCancelled()) break
+      if (seekTarget !== null) continue
 
       const { path, iv1: iv1Hex, iv2: iv2Hex } = item.chunks[i]
       console.log(`[VideoPlayer] chunk ${i + 1}/${item.chunks.length} buffered=${bufferedAhead(sb, video.currentTime).toFixed(0)}s ahead`)
@@ -164,19 +204,34 @@ async function streamWithMediaSource(video, item, { key1, key2 }, setLoadInfo, s
       const iv2 = hexToIV(iv2Hex)
       const encrypted = await fetchChunk(resolveChunkUrl(path))
       if (isCancelled()) break
-      const decrypted = await decryptDoubleBuffer(key1, key2, iv1, iv2, encrypted)
+      if (seekTarget !== null) continue
 
-      await sbOperation(sb, () => sb.appendBuffer(decrypted))
+      const decrypted = await decryptDoubleBuffer(key1, key2, iv1, iv2, encrypted)
+      if (isCancelled()) break
+      if (seekTarget !== null) continue
+
+      if (i === 0) initChunk = decrypted
+
+      try {
+        await sbOperation(sb, () => sb.appendBuffer(decrypted))
+      } catch (sbErr) {
+        // Safari fires SourceBuffer error when a seek interrupts appendBuffer —
+        // the session is now defunct; the seek handler will recreate it.
+        if (seekTarget !== null) { continue }
+        throw sbErr
+      }
 
       setLoadInfo({
         chunksLoaded: i + 1,
         totalChunks: item.chunks.length,
         bufferedSec: bufferedAhead(sb, video.currentTime) + video.currentTime,
       })
+
+      i++
     }
 
     if (!isCancelled()) {
-      ms.endOfStream()
+      try { ms.endOfStream() } catch {}
       setLoadInfo(info => ({ ...info, chunksLoaded: item.chunks.length }))
       console.log('[VideoPlayer] Stream complete')
     }
@@ -184,6 +239,8 @@ async function streamWithMediaSource(video, item, { key1, key2 }, setLoadInfo, s
     console.error('[VideoPlayer] Streaming error:', e)
     setError(`Streaming error: ${e.message}`)
     try { ms.endOfStream('network') } catch {}
+  } finally {
+    video.removeEventListener('seeking', onSeeking)
   }
 }
 

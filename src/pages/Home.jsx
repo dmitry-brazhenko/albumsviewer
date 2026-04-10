@@ -33,7 +33,7 @@ export default function Home() {
           </svg>
         </div>
         <h1 className={styles.title}>Albums Viewer</h1>
-        <p className={styles.subtitle}>Encrypted private photo &amp; video albums</p>
+        <p className={styles.subtitle}>Private photo &amp; video albums</p>
 
         <div className={styles.inputGroup}>
           <textarea
@@ -54,7 +54,7 @@ export default function Home() {
       </div>
 
       <p className={styles.footer}>
-        All decryption happens in your browser. Nothing is sent to any server.
+        Nothing is sent to any server.
       </p>
     </div>
   )

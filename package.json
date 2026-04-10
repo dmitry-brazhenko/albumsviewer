@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "create-album": "node scripts/create-album.mjs",
+    "encrypt-bundle": "node scripts/encrypt-bundle.mjs",
     "prepare": "bash scripts/install-hooks.sh 2>/dev/null || true"
   },
   "dependencies": {
